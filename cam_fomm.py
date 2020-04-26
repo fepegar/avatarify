@@ -47,7 +47,7 @@ def load_checkpoints(config_path, checkpoint_path, device='cuda'):
 
     generator.eval()
     kp_detector.eval()
-    
+
     return generator, kp_detector
 
 def normalize_alignment_kp(kp):
@@ -56,13 +56,13 @@ def normalize_alignment_kp(kp):
     area = np.sqrt(area)
     kp[:, :2] = kp[:, :2] / area
     return kp
-    
+
 def get_frame_kp(fa, image):
     kp_landmarks = fa.get_landmarks(255 * image)
     if kp_landmarks:
         kp_image = kp_landmarks[0]
         kp_image = normalize_alignment_kp(kp_image)
-        
+
         return kp_image
     else:
         return None
@@ -72,26 +72,26 @@ def is_new_frame_better(fa, source, driving, device):
     global start_frame_kp
     global avatar_kp
     global display_string
-    
+
     if avatar_kp is None:
         display_string = "No face detected in avatar."
         return False
-    
+
     if start_frame is None:
         display_string = "No frame to compare to."
         return True
-    
+
     driving_smaller = resize(driving, (128, 128))[..., :3]
     new_kp = get_frame_kp(fa, driving)
-    
+
     if new_kp is not None:
         new_norm = (np.abs(avatar_kp - new_kp) ** 2).sum()
         old_norm = (np.abs(avatar_kp - start_frame_kp) ** 2).sum()
-        
+
         out_string = "{0} : {1}".format(int(new_norm * 100), int(old_norm * 100))
         display_string = out_string
         log(out_string)
-        
+
         return new_norm < old_norm
     else:
         display_string = "No face found!"
@@ -197,7 +197,9 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true", help="Print additional information")
 
     parser.add_argument("--avatars", default="./avatars", help="path to avatars directory")
- 
+
+    parser.add_argument("--video", default=None, help="path to video file")
+
     parser.set_defaults(relative=False)
     parser.set_defaults(adapt_scale=False)
     parser.set_defaults(no_pad=False)
@@ -210,7 +212,7 @@ if __name__ == "__main__":
         log('Force no streaming')
         _streaming = False
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu' 
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     avatars=[]
     images_list = sorted(glob.glob(f'{opt.avatars}/*'))
@@ -222,30 +224,34 @@ if __name__ == "__main__":
                 img = np.tile(img[..., None], [1, 1, 3])
             img = resize(img, (IMG_SIZE, IMG_SIZE))[..., :3]
             avatars.append(img)
-    
+
     log('load checkpoints..')
-    
+
     generator, kp_detector = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, device=device)
-    
+
     fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D, flip_input=True, device=device)
 
-    cap = VideoCaptureAsync(opt.cam)
-    cap.start()
+    use_webcam = opt.video is None
 
-    if _streaming:
+    if use_webcam is None:
+        cap = VideoCaptureAsync(opt.cam)
+        cap.start()
+
+    if _streaming and use_webcam:
         ret, frame = cap.read()
         stream_img_size = frame.shape[1], frame.shape[0]
         stream = pyfakewebcam.FakeWebcam(f'/dev/video{opt.virt_cam}', *stream_img_size)
 
-    cur_ava = 0    
+    cur_ava = 0
     avatar = None
     change_avatar(fa, avatars[cur_ava])
     passthrough = False
 
-    cv2.namedWindow('cam', cv2.WINDOW_GUI_NORMAL)
-    cv2.namedWindow('avatarify', cv2.WINDOW_GUI_NORMAL)
-    cv2.moveWindow('cam', 0, 0)
-    cv2.moveWindow('avatarify', 600, 0)
+    if use_webcam:
+        cv2.namedWindow('cam', cv2.WINDOW_GUI_NORMAL)
+        cv2.namedWindow('avatarify', cv2.WINDOW_GUI_NORMAL)
+        cv2.moveWindow('cam', 0, 0)
+        cv2.moveWindow('avatarify', 600, 0)
 
     frame_proportion = 0.9
 
@@ -268,11 +274,12 @@ if __name__ == "__main__":
         t_start = time.time()
 
         green_overlay = False
-        
-        ret, frame = cap.read()
-        if not ret:
-            log("Can't receive frame (stream end?). Exiting ...")
-            break
+
+        if use_webcam:
+            ret, frame = cap.read()
+            if not ret:
+                log("Can't receive frame (stream end?). Exiting ...")
+                break
 
         frame_orig = frame.copy()
 
@@ -302,7 +309,7 @@ if __name__ == "__main__":
 
         if out.dtype != np.uint8:
             out = (out * 255).astype(np.uint8)
-        
+
         key = cv2.waitKey(1)
 
         if key == 27: # ESC
@@ -358,16 +365,17 @@ if __name__ == "__main__":
 
         if _streaming:
             out = cv2.resize(out, stream_img_size)
-            stream.schedule_frame(out)
+            if use_webcam:
+                stream.schedule_frame(out)
 
         preview_frame = cv2.addWeighted( avatars[cur_ava][:,:,::-1], overlay_alpha, frame, 1.0 - overlay_alpha, 0.0)
-        
+
         if preview_flip:
             preview_frame = cv2.flip(preview_frame, 1)
-            
+
         if output_flip:
             out = cv2.flip(out, 1)
-            
+
         if green_overlay:
             green_alpha = 0.8
             overlay = preview_frame.copy()
@@ -375,7 +383,7 @@ if __name__ == "__main__":
             preview_frame = cv2.addWeighted( preview_frame, green_alpha, overlay, 1.0 - green_alpha, 0.0)
 
         timing['postproc'] = (time.time() - postproc_start) * 1000
-            
+
         if find_keyframe:
             preview_frame = cv2.putText(preview_frame, display_string, (10, 220), 0, 0.5 * IMG_SIZE / 256, (255, 255, 255), 1)
 
@@ -383,13 +391,15 @@ if __name__ == "__main__":
             timing_string = f"FPS/Model/Pre/Post: {fps:.1f} / {timing['predict']:.1f} / {timing['preproc']:.1f} / {timing['postproc']:.1f}"
             preview_frame = cv2.putText(preview_frame, timing_string, (10, 240), 0, 0.3 * IMG_SIZE / 256, (255, 255, 255), 1)
 
-        cv2.imshow('cam', preview_frame)
-        cv2.imshow('avatarify', out[..., ::-1])
+        if use_webcam:
+            cv2.imshow('cam', preview_frame)
+            cv2.imshow('avatarify', out[..., ::-1])
 
         fps_hist.append(time.time() - t_start)
         if len(fps_hist) == 10:
             fps = 10 / sum(fps_hist)
             fps_hist = []
 
-    cap.stop()
-    cv2.destroyAllWindows()
+    if use_webcam:
+        cap.stop()
+        cv2.destroyAllWindows()
