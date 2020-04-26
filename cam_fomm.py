@@ -233,14 +233,26 @@ if __name__ == "__main__":
 
     use_webcam = opt.video is None
 
-    if use_webcam is None:
+    if use_webcam:
         cap = VideoCaptureAsync(opt.cam)
         cap.start()
+    else:
+        from pathlib import Path
+        out_dir = Path('/tmp/frames_fer')
+        out_dir.mkdir(exist_ok=True)
+        from moviepy.editor import VideoFileClip
+        clip = VideoFileClip(opt.video)
+        frames = clip.iter_frames()
+        paths = []
 
     if _streaming and use_webcam:
         ret, frame = cap.read()
         stream_img_size = frame.shape[1], frame.shape[0]
         stream = pyfakewebcam.FakeWebcam(f'/dev/video{opt.virt_cam}', *stream_img_size)
+    else:
+        frame = next(frames)
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        stream_img_size = frame.shape[1], frame.shape[0]
 
     cur_ava = 0
     avatar = None
@@ -264,6 +276,7 @@ if __name__ == "__main__":
     fps = 0
     show_fps = False
 
+    frame_idx = 0
     while True:
         timing = {
             'preproc': 0,
@@ -279,6 +292,13 @@ if __name__ == "__main__":
             ret, frame = cap.read()
             if not ret:
                 log("Can't receive frame (stream end?). Exiting ...")
+                break
+        else:
+            try:
+                frame = next(frames)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            except:
+                log("Can't extract frame (video end?). Exiting ...")
                 break
 
         frame_orig = frame.copy()
@@ -394,6 +414,11 @@ if __name__ == "__main__":
         if use_webcam:
             cv2.imshow('cam', preview_frame)
             cv2.imshow('avatarify', out[..., ::-1])
+        else:
+            out_path = str(out_dir / f'{frame_idx:08d}.jpg')
+            paths.append(out_path)
+            cv2.imwrite(out_path, out[..., ::-1])
+            frame_idx += 1
 
         fps_hist.append(time.time() - t_start)
         if len(fps_hist) == 10:
@@ -403,3 +428,24 @@ if __name__ == "__main__":
     if use_webcam:
         cap.stop()
         cv2.destroyAllWindows()
+    else:
+        import tempfile
+        from moviepy.editor import ImageSequenceClip
+        from subprocess import call
+        new_clip = ImageSequenceClip(paths, fps=clip.fps)
+        with tempfile.NamedTemporaryFile(suffix='.mp4') as f:
+            new_clip.write_videofile(f.name)
+            output_path = '/tmp/javi_cara.mp4'
+            command = [
+                'ffmpeg',
+                '-i', f.name,
+                '-i', opt.video,
+                '-c', 'copy',
+                '-map', '0:v:0',
+                '-map', '1:a:0',
+                '-shortest',
+                output_path,
+                '-y',
+            ]
+            command = [str(arg) for arg in command]
+            call(command)
